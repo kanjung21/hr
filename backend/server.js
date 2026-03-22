@@ -4,7 +4,7 @@ import pkg from 'pg';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import 'dotenv/config';
-import { getDatabaseConfig } from './src/config/database';
+import { getDatabaseConfig } from './src/config/database.js';
 
 const { Pool } = pkg;
 const app = express();

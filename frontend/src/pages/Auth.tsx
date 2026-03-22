@@ -15,7 +15,9 @@ export default function Auth() {
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmailSent, setResetEmailSent] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
-  const { signIn, signInWithOAuth } = useAuth();
+  const [office365Email, setOffice365Email] = useState('');
+  const [loginMode, setLoginMode] = useState<'traditional' | 'office365'>('traditional');
+  const { signIn, signInWithOffice365 } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -32,15 +34,22 @@ export default function Auth() {
     return () => window.removeEventListener('oauth-email-not-found', handler as EventListener);
   }, [toast]);
 
-  // Office365 OAuth Sign In
-  const handleOffice365SignIn = async () => {
+  // Office365 Email Sign In
+  const handleOffice365EmailSignIn = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
     setIsOffice365Loading(true);
+    
     try {
-      await signInWithOAuth();
+      await signInWithOffice365(office365Email);
+      toast({
+        title: 'เข้าสู่ระบบสำเร็จ',
+        description: 'ยินดีต้อนรับเข้าสู่ระบบ HR',
+      });
+      navigate('/dashboard');
     } catch (error: any) {
       toast({
         title: 'เกิดข้อผิดพลาด',
-        description: error.message || 'ไม่สามารถเข้าสู่ระบบด้วย Office365 ได้',
+        description: error.message || 'ไม่สามารถเข้าสู่ระบบ Office365 ได้',
         variant: 'destructive',
       });
     } finally {
@@ -245,90 +254,120 @@ export default function Auth() {
                   <p className="text-muted-foreground mt-1">กรุณากรอกข้อมูลเพื่อเข้าสู่ระบบ</p>
                 </div>
 
-                <form onSubmit={handleSignIn} className="space-y-5">
-                  <div className="space-y-2">
-                    <Label htmlFor="signin-email" className="text-foreground">อีเมล</Label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                      <Input
-                        id="signin-email"
-                        name="email"
-                        type="email"
-                        placeholder="your@email.com"
-                        className="pl-11 h-12 bg-background border-input"
-                        required
-                      />
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="signin-password" className="text-foreground">รหัสผ่าน</Label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                      <Input
-                        id="signin-password"
-                        name="password"
-                        type="password"
-                        placeholder="••••••••"
-                        className="pl-11 h-12 bg-background border-input"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <Button 
-                    type="submit" 
-                    className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-medium" 
-                    disabled={isLoading}
-                  >
-                    {isLoading ? (
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                    ) : (
-                      'เข้าสู่ระบบ'
-                    )}
-                  </Button>
-                </form>
-
-                {/* Divider */}
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t border-border" />
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-background px-2 text-muted-foreground">หรือ</span>
-                  </div>
-                </div>
-
-                {/* Office365 Sign In */}
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full h-12 border-input"
-                  onClick={handleOffice365SignIn}
-                  disabled={isOffice365Loading}
-                >
-                  {isOffice365Loading ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M11.5 2C6.26 2 2 6.26 2 11.5S6.26 21 11.5 21 21 16.74 21 11.5 16.74 2 11.5 2zm0 18C7.36 20 4 16.64 4 11.5S7.36 3 11.5 3 19 6.36 19 11.5 15.64 20 11.5 20z"/>
-                        <path d="M11 6h1v5h-1zm0 7h1v5h-1z" fill="#0078D4"/>
-                      </svg>
-                      เข้าสู่ระบบด้วย Office365
-                    </>
-                  )}
-                </Button>
-
-                <div className="text-center">
+                {/* Login Mode Tabs */}
+                <div className="flex gap-2 bg-muted p-1 rounded-lg">
                   <button
                     type="button"
-                    onClick={() => setShowForgotPassword(true)}
-                    className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={() => setLoginMode('traditional')}
+                    className={`flex-1 py-2 px-4 rounded-md font-medium transition-all text-sm ${
+                      loginMode === 'traditional'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
                   >
-                    ลืมรหัสผ่าน?
+                    บัญชีธรรมชาติ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLoginMode('office365')}
+                    className={`flex-1 py-2 px-4 rounded-md font-medium transition-all text-sm ${
+                      loginMode === 'office365'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Office365
                   </button>
                 </div>
+
+                {loginMode === 'traditional' ? (
+                  <form onSubmit={handleSignIn} className="space-y-5">
+                    <div className="space-y-2">
+                      <Label htmlFor="signin-email" className="text-foreground">อีเมล</Label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                        <Input
+                          id="signin-email"
+                          name="email"
+                          type="email"
+                          placeholder="your@email.com"
+                          className="pl-11 h-12 bg-background border-input"
+                          required
+                        />
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Label htmlFor="signin-password" className="text-foreground">รหัสผ่าน</Label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                        <Input
+                          id="signin-password"
+                          name="password"
+                          type="password"
+                          placeholder="••••••••"
+                          className="pl-11 h-12 bg-background border-input"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <Button 
+                      type="submit" 
+                      className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-medium" 
+                      disabled={isLoading}
+                    >
+                      {isLoading ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        'เข้าสู่ระบบ'
+                      )}
+                    </Button>
+
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotPassword(true)}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        ลืมรหัสผ่าน?
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <form onSubmit={handleOffice365EmailSignIn} className="space-y-5">
+                    <div className="space-y-2">
+                      <Label htmlFor="office365-email" className="text-foreground">อีเมล Office365</Label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                        <Input
+                          id="office365-email"
+                          type="email"
+                          placeholder="name@company.com"
+                          className="pl-11 h-12 bg-background border-input"
+                          value={office365Email}
+                          onChange={(e) => setOffice365Email(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        ใช้อีเมล Office365 ของคุณสำหรับเข้าสู่ระบบอัตโนมัติ
+                      </p>
+                    </div>
+
+                    <Button 
+                      type="submit" 
+                      className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-medium" 
+                      disabled={isOffice365Loading}
+                    >
+                      {isOffice365Loading ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        'เข้าสู่ระบบ Office365'
+                      )}
+                    </Button>
+                  </form>
+                )}
 
                 <div className="border-t border-border pt-6">
                   <p className="text-sm text-muted-foreground text-center">

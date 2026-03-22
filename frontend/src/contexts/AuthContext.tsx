@@ -21,6 +21,7 @@ interface AuthContextType {
   signUp: (email: string, password: string, firstName: string, lastName: string) => Promise<void>;
   signOut: () => Promise<void>;
   signInWithOAuth: () => Promise<void>;
+  signInWithOffice365: (email: string) => Promise<void>;
   hasRole: (role: AppRole) => boolean;
   isHROrAdmin: boolean;
   isManager: boolean;
@@ -180,6 +181,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const signInWithOffice365 = async (email: string) => {
+    const res = await fetch('/api/auth/office365-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || 'Office365 login failed');
+    }
+
+    localStorage.setItem('token', data.token);
+    setToken(data.token);
+    setAuthData(data);
+  };
+
   const signOut = async () => {
     localStorage.removeItem('token');
     setToken(null);
@@ -204,6 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn,
       signUp,
       signInWithOAuth,
+      signInWithOffice365,
       signOut,
       hasRole,
       isHROrAdmin,

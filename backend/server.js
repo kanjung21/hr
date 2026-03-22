@@ -126,16 +126,50 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email และ password ต้องระบุ' });
+    if (!email) {
+      return res.status(400).json({ error: 'Email ต้องระบุ' });
     }
 
-    const result = await pool.query('SELECT * FROM user_auth WHERE email = $1', [email]);
-    const user = result.rows[0];
-    if (!user) return res.status(401).json({ error: 'รหัสผ่านหรืออีเมลไม่ถูกต้อง' });
+    // Try to find user in user_auth table
+    let result = await pool.query('SELECT * FROM user_auth WHERE email = $1', [email]);
+    let user = result.rows[0];
 
-    const isValid = await bcrypt.compare(password, user.password_hash);
-    if (!isValid) return res.status(401).json({ error: 'รหัสผ่านหรืออีเมลไม่ถูกต้อง' });
+    // If user not found in user_auth but has password, reject
+    if (!user && password) {
+      return res.status(401).json({ error: 'รหัสผ่านหรืออีเมลไม่ถูกต้อง' });
+    }
+
+    // If user found, verify password
+    if (user && password) {
+      const isValid = await bcrypt.compare(password, user.password_hash);
+      if (!isValid) return res.status(401).json({ error: 'รหัสผ่านหรืออีเมลไม่ถูกต้อง' });
+    }
+
+    // If user not found in user_auth, check employees table (for Office365)
+    if (!user) {
+      const empResult = await pool.query('SELECT user_id, email FROM employees WHERE LOWER(email) = LOWER($1)', [email]);
+      const employee = empResult.rows[0];
+      
+      if (employee && employee.user_id) {
+        // Check if user exists in user_auth
+        const authCheck = await pool.query('SELECT * FROM user_auth WHERE id = $1', [employee.user_id]);
+        if (authCheck.rows.length > 0) {
+          user = authCheck.rows[0];
+        } else {
+          // Auto-create user_auth for Office365 users (without password)
+          const autoUser = await pool.query(
+            'INSERT INTO user_auth (id, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING *',
+            [employee.user_id, email, await bcrypt.hash('office365_oauth', 10), 'employee']
+          );
+          user = autoUser.rows[0];
+          console.log(`✅ Auto-created user_auth for Office365 user: ${email}`);
+        }
+      }
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'ไม่พบอีเมลนี้ในระบบ กรุณาติดต่อ Admin' });
+    }
 
     const rolesResult = await pool.query('SELECT role FROM user_roles WHERE user_id = $1', [user.id]);
     const roles = rolesResult.rows.map((r) => r.role);
@@ -151,6 +185,56 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ token, user: { id: user.id, email: user.email, roles, employee } });
   } catch (error) {
     console.error('Error logging in:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ' });
+  }
+});
+
+// Office365 Login (Email only, no password required)
+app.post('/api/auth/office365-login', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email ต้องระบุ' });
+    }
+
+    // Check in employees table
+    const empResult = await pool.query(
+      'SELECT user_id, email, first_name, last_name FROM employees WHERE LOWER(email) = LOWER($1)',
+      [email]
+    );
+    const employee = empResult.rows[0];
+
+    if (!employee || !employee.user_id) {
+      return res.status(401).json({ error: 'ไม่พบอีเมล Office365 นี้ในระบบ กรุณาติดต่อ Admin' });
+    }
+
+    // Check or auto-create in user_auth
+    let result = await pool.query('SELECT * FROM user_auth WHERE id = $1', [employee.user_id]);
+    let user = result.rows[0];
+
+    if (!user) {
+      const autoUser = await pool.query(
+        'INSERT INTO user_auth (id, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING *',
+        [employee.user_id, email, await bcrypt.hash('office365_oauth', 10), 'employee']
+      );
+      user = autoUser.rows[0];
+      console.log(`✅ Auto-created user_auth for Office365 user: ${email}`);
+    }
+
+    const rolesResult = await pool.query('SELECT role FROM user_roles WHERE user_id = $1', [user.id]);
+    const roles = rolesResult.rows.map((r) => r.role);
+
+    const fullEmployeeRes = await pool.query(
+      'SELECT e.*, d.name as department_name, p.name as position_name FROM employees e LEFT JOIN departments d ON e.department_id = d.id LEFT JOIN positions p ON e.position_id = p.id WHERE e.user_id = $1',
+      [user.id]
+    );
+    const fullEmployee = fullEmployeeRes.rows[0] || null;
+
+    const token = jwt.sign({ id: user.id, email: user.email, roles }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.json({ token, user: { id: user.id, email: user.email, roles, employee: fullEmployee } });
+  } catch (error) {
+    console.error('Error Office365 login:', error);
     res.status(500).json({ error: 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ' });
   }
 });

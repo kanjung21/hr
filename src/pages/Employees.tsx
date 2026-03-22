@@ -39,7 +39,6 @@ import {
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
 import type { Employee, Department, Position, EmployeeType, EmployeeStatus, AppRole } from '@/types/hr';
 import { employeeTypeLabels, roleLabels } from '@/types/hr';
 import { format } from 'date-fns';
@@ -126,17 +125,24 @@ export default function Employees() {
   const fetchData = async () => {
     try {
       const [employeesRes, departmentsRes, positionsRes] = await Promise.all([
-        supabase
-          .from('employees')
-          .select('*, department:departments(*), position:positions(*)')
-          .order('employee_code'),
-        supabase.from('departments').select('*').order('name'),
-        supabase.from('positions').select('*').order('name'),
+        fetch('/api/employees'),
+        fetch('/api/departments'),
+        fetch('/api/positions'),
       ]);
 
-      setEmployees(employeesRes.data || []);
-      setDepartments(departmentsRes.data || []);
-      setPositions(positionsRes.data || []);
+      if (!employeesRes.ok || !departmentsRes.ok || !positionsRes.ok) {
+        throw new Error('ไม่สามารถโหลดข้อมูลได้');
+      }
+
+      const [employeesData, departmentsData, positionsData] = await Promise.all([
+        employeesRes.json(),
+        departmentsRes.json(),
+        positionsRes.json(),
+      ]);
+
+      setEmployees(employeesData);
+      setDepartments(departmentsData);
+      setPositions(positionsData);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -180,69 +186,41 @@ export default function Employees() {
 
     try {
       if (editingEmployee) {
-        const { error } = await supabase
-          .from('employees')
-          .update(employeeData)
-          .eq('id', editingEmployee.id);
-        
-        if (error) throw error;
+        const res = await fetch(`/api/employees/${editingEmployee.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(employeeData),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data?.error || 'อัพเดตพนักงานล้มเหลว');
+        }
+
         toast({ title: 'อัพเดตข้อมูลสำเร็จ' });
         setIsDialogOpen(false);
         setEditingEmployee(null);
       } else {
-        // Create employee first
-        const { data: newEmployee, error: insertError } = await supabase
-          .from('employees')
-          .insert(employeeData)
-          .select()
-          .single();
-        
-        if (insertError) throw insertError;
+        const res = await fetch('/api/employees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(employeeData),
+        });
 
-        // If user account creation is enabled, create the user
-        if (createUserAccount && email && generatedPassword) {
-          const { data: sessionData } = await supabase.auth.getSession();
-          
-          const response = await supabase.functions.invoke('create-employee-user', {
-            body: {
-              email,
-              password: generatedPassword,
-              first_name: employeeData.first_name,
-              last_name: employeeData.last_name,
-              employee_id: newEmployee.id,
-              role: selectedRole,
-              send_email: sendCredentialsEmail,
-            },
-            headers: {
-              Authorization: `Bearer ${sessionData.session?.access_token}`,
-            },
-          });
-
-          if (response.error) {
-            toast({
-              title: 'เพิ่มพนักงานสำเร็จ แต่สร้างบัญชีผู้ใช้ไม่สำเร็จ',
-              description: response.error.message,
-              variant: 'destructive',
-            });
-          } else {
-            setCreatedCredentials({ email, password: generatedPassword });
-            setShowCredentials(true);
-            toast({ 
-              title: 'เพิ่มพนักงานและสร้างบัญชีผู้ใช้สำเร็จ',
-              description: sendCredentialsEmail ? 'ส่งข้อมูลการเข้าสู่ระบบผ่านอีเมลแล้ว' : 'ข้อมูลการเข้าสู่ระบบแสดงในหน้าต่าง'
-            });
-          }
-        } else {
-          toast({ title: 'เพิ่มพนักงานสำเร็จ' });
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data?.error || 'เพิ่มพนักงานล้มเหลว');
         }
-        
+
+        toast({ title: 'เพิ่มพนักงานสำเร็จ' });
+
         setIsDialogOpen(false);
         setEditingEmployee(null);
         setCreateUserAccount(false);
         setGeneratedPassword('');
         setSelectedRole('employee');
       }
-      
+
       fetchData();
     } catch (error: any) {
       toast({
@@ -260,12 +238,15 @@ export default function Employees() {
     setIsDeleting(true);
 
     try {
-      const { error } = await supabase
-        .from('employees')
-        .delete()
-        .eq('id', deletingId);
-      
-      if (error) throw error;
+      const res = await fetch(`/api/employees/${deletingId}`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data?.error || 'ลบพนักงานล้มเหลว');
+      }
+
       toast({ title: 'ลบพนักงานสำเร็จ' });
       fetchData();
       setDeleteDialogOpen(false);
@@ -283,10 +264,10 @@ export default function Employees() {
 
   // ฟังก์ชันรีเซ็ตรหัสผ่าน
   const handleResetPassword = async () => {
-    if (!selectedEmployeeForReset?.user_id) {
+    if (!selectedEmployeeForReset?.id) {
       toast({
         title: 'เกิดข้อผิดพลาด',
-        description: 'พนักงานนี้ยังไม่มีบัญชีผู้ใช้',
+        description: 'พนักงานนี้ยังไม่มี ID',
         variant: 'destructive',
       });
       return;
@@ -295,35 +276,28 @@ export default function Employees() {
     setIsResettingPassword(true);
     try {
       const password = newPasswordForReset || generatePassword();
-      const { data: sessionData } = await supabase.auth.getSession();
-      
-      const response = await supabase.functions.invoke('reset-user-password', {
-        body: {
-          user_id: selectedEmployeeForReset.user_id,
-          new_password: password,
-          email: selectedEmployeeForReset.email,
-          send_email: sendPasswordEmail,
-        },
-        headers: {
-          Authorization: `Bearer ${sessionData.session?.access_token}`,
-        },
+      const res = await fetch(`/api/employees/${selectedEmployeeForReset.id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_password: password }),
       });
 
-      if (response.error) {
-        throw new Error(response.error.message);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data?.error || 'ไม่สามารถรีเซ็ตรหัสผ่านได้');
       }
 
-      setResetPasswordResult({ 
-        email: selectedEmployeeForReset.email || '', 
-        password 
+      setResetPasswordResult({
+        email: selectedEmployeeForReset.email || '',
+        password,
       });
       setShowResetResult(true);
-      
+
       toast({
         title: 'รีเซ็ตรหัสผ่านสำเร็จ',
         description: sendPasswordEmail ? 'ส่งรหัสผ่านใหม่ผ่านอีเมลแล้ว' : 'รหัสผ่านใหม่แสดงในหน้าต่าง',
       });
-      
+
       setResetPasswordDialogOpen(false);
       setSelectedEmployeeForReset(null);
       setNewPasswordForReset('');
@@ -340,10 +314,10 @@ export default function Employees() {
 
   // ฟังก์ชันเปลี่ยนบทบาท
   const handleChangeRole = async () => {
-    if (!selectedEmployeeForRole?.user_id) {
+    if (!selectedEmployeeForRole?.id) {
       toast({
         title: 'เกิดข้อผิดพลาด',
-        description: 'พนักงานนี้ยังไม่มีบัญชีผู้ใช้',
+        description: 'พนักงานนี้ยังไม่มี ID',
         variant: 'destructive',
       });
       return;
@@ -351,20 +325,15 @@ export default function Employees() {
 
     setIsChangingRole(true);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      
-      const response = await supabase.functions.invoke('update-user-role', {
-        body: {
-          user_id: selectedEmployeeForRole.user_id,
-          new_role: newRoleForEmployee,
-        },
-        headers: {
-          Authorization: `Bearer ${sessionData.session?.access_token}`,
-        },
+      const res = await fetch(`/api/employees/${selectedEmployeeForRole.id}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_role: newRoleForEmployee }),
       });
 
-      if (response.error) {
-        throw new Error(response.error.message);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data?.error || 'ไม่สามารถเปลี่ยนบทบาทได้');
       }
 
       toast({
@@ -387,14 +356,19 @@ export default function Employees() {
   };
 
   const filteredEmployees = employees.filter((emp) => {
-    const matchesSearch = 
-      emp.first_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      emp.last_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      emp.employee_code.toLowerCase().includes(searchQuery.toLowerCase());
-    
+    const search = searchQuery.toLowerCase();
+    const firstName = (emp.first_name ?? '').toLowerCase();
+    const lastName = (emp.last_name ?? '').toLowerCase();
+    const employeeCode = (emp.employee_code ?? '').toLowerCase();
+
+    const matchesSearch =
+      firstName.includes(search) ||
+      lastName.includes(search) ||
+      employeeCode.includes(search);
+
     const matchesDepartment = filterDepartment === 'all' || emp.department_id === filterDepartment;
     const matchesStatus = filterStatus === 'all' || emp.status === filterStatus;
-    
+
     return matchesSearch && matchesDepartment && matchesStatus;
   });
 
@@ -913,7 +887,7 @@ export default function Employees() {
                       <TableCell>
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-medium text-sm">
-                            {emp.first_name[0]}
+                            {emp.first_name ? emp.first_name[0] : '-'}
                           </div>
                           <div>
                             <p className="font-medium">{emp.prefix} {emp.first_name} {emp.last_name}</p>
@@ -927,7 +901,9 @@ export default function Employees() {
                       <TableCell>
                         <StatusBadge status={emp.status} type="employee" />
                       </TableCell>
-                      <TableCell>{format(new Date(emp.start_date), 'dd/MM/yyyy')}</TableCell>
+                      <TableCell>
+                        {emp.start_date ? format(new Date(emp.start_date), 'dd/MM/yyyy') : '-'}
+                      </TableCell>
                       <TableCell>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>

@@ -1,24 +1,24 @@
 import express from 'express';
 import cors from 'cors';
 import pkg from 'pg';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import 'dotenv/config';
+import { getDatabaseConfig } from './src/config/database';
 
 const { Pool } = pkg;
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || 'replace_this_with_a_secure_secret';
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// PostgreSQL Connection Pool
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'postgres',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'K@n50280754',
-});
+// PostgreSQL Connection Pool (using database.ts config helper)
+const dbConfig = getDatabaseConfig();
+const pool = new Pool(dbConfig);
+
 
 // Test database connection
 pool.on('connect', () => {
@@ -36,7 +36,226 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Backend API ทำงานปกติ' });
 });
 
+// Create user_auth table if not exists (for local auth)
+const initAuthTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_auth (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT DEFAULT 'employee',
+      created_at TIMESTAMPTZ DEFAULT now()
+    )
+  `);
+};
+
+initAuthTable().catch((err) => {
+  console.error('Failed to init user_auth table:', err);
+});
+
+const authenticate = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, role = 'employee', first_name, last_name } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email และ password ต้องระบุ' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const result = await pool.query(
+      'INSERT INTO user_auth (email, password_hash, role) VALUES ($1, $2, $3) RETURNING *',
+      [email, hashedPassword, role]
+    );
+
+    const user = result.rows[0];
+
+    // Optional: สร้าง record ใน employees table หากส่งข้อมูลพนักงานมาด้วย
+    let employee = null;
+    if (first_name && last_name) {
+      const empResult = await pool.query(
+        'INSERT INTO employees (user_id, employee_code, first_name, last_name, email, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [user.id, `EMP-${Date.now()}`, first_name, last_name, email, 'active']
+      );
+      employee = empResult.rows[0];
+    }
+
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.status(201).json({ token, user: { id: user.id, email: user.email, role: user.role, employee } });
+  } catch (error) {
+    console.error('Error registering user:', error);
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'อีเมลนี้ถูกใช้แล้ว' });
+    }
+    res.status(500).json({ error: 'เกิดข้อผิดพลาดในการสมัครสมาชิก' });
+  }
+});
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email ต้องระบุ' });
+    }
+    // TODO: ส่งอีเมลรีเซ็ตรหัสผ่านโดยใช้ SMTP หรือวิธีการที่ต้องการ
+    // นี่เป็นสถานะตัวอย่างเพื่อให้ UI ทำงานได้
+    res.json({ message: 'ลิงก์รีเซ็ตรหัสผ่านถูกส่งแล้ว (จำลอง)' });
+  } catch (error) {
+    console.error('Error forgot-password:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาด' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email และ password ต้องระบุ' });
+    }
+
+    const result = await pool.query('SELECT * FROM user_auth WHERE email = $1', [email]);
+    const user = result.rows[0];
+    if (!user) return res.status(401).json({ error: 'รหัสผ่านหรืออีเมลไม่ถูกต้อง' });
+
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) return res.status(401).json({ error: 'รหัสผ่านหรืออีเมลไม่ถูกต้อง' });
+
+    const rolesResult = await pool.query('SELECT role FROM user_roles WHERE user_id = $1', [user.id]);
+    const roles = rolesResult.rows.map((r) => r.role);
+
+    const employeeRes = await pool.query(
+      'SELECT e.*, d.name as department_name, p.name as position_name FROM employees e LEFT JOIN departments d ON e.department_id = d.id LEFT JOIN positions p ON e.position_id = p.id WHERE e.user_id = $1',
+      [user.id]
+    );
+    const employee = employeeRes.rows[0] || null;
+
+    const token = jwt.sign({ id: user.id, email: user.email, roles }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.json({ token, user: { id: user.id, email: user.email, roles, employee } });
+  } catch (error) {
+    console.error('Error logging in:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ' });
+  }
+});
+
+app.get('/api/auth/me', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const authResult = await pool.query('SELECT id, email FROM user_auth WHERE id = $1', [userId]);
+    const authUser = authResult.rows[0];
+    if (!authUser) return res.status(401).json({ error: 'Unauthorized' });
+
+    const rolesResult = await pool.query('SELECT role FROM user_roles WHERE user_id = $1', [userId]);
+    const roles = rolesResult.rows.map((r) => r.role);
+
+    const employeeRes = await pool.query(
+      'SELECT e.*, d.name as department_name, p.name as position_name FROM employees e LEFT JOIN departments d ON e.department_id = d.id LEFT JOIN positions p ON e.position_id = p.id WHERE e.user_id = $1',
+      [userId]
+    );
+
+    res.json({ user: { id: authUser.id, email: authUser.email, roles, employee: employeeRes.rows[0] ?? null } });
+  } catch (error) {
+    console.error('Error /api/auth/me:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาด' });
+  }
+});
+
+// Get user roles by user_id (for OAuth integration)
+app.get('/api/user_roles/user/:user_id', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT role FROM user_roles WHERE user_id = $1', [req.params.user_id]);
+    res.json(result.rows.map((r) => r.role));
+  } catch (error) {
+    console.error('Error fetching user roles:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาด' });
+  }
+});
+
+// Optional: password reset and role update for employee actions
+app.post('/api/employees/:id/reset-password', authenticate, async (req, res) => {
+  try {
+    const { new_password } = req.body;
+    const empId = req.params.id;
+    const empRes = await pool.query('SELECT user_id FROM employees WHERE id = $1', [empId]);
+    const employee = empRes.rows[0];
+    if (!employee || !employee.user_id) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานหรือ user_id ไม่มีค่า' });
+    }
+
+    const hashedPassword = await bcrypt.hash(new_password || `${Math.random().toString(36).slice(-8)}A!`, 10);
+    await pool.query('UPDATE user_auth SET password_hash = $1 WHERE id = $2', [hashedPassword, employee.user_id]);
+
+    res.json({ message: 'รีเซ็ตรหัสผ่านสำเร็จ' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาด' });
+  }
+});
+
+app.put('/api/employees/:id/role', authenticate, async (req, res) => {
+  try {
+    const { new_role } = req.body;
+    const empId = req.params.id;
+    const empRes = await pool.query('SELECT user_id FROM employees WHERE id = $1', [empId]);
+    const employee = empRes.rows[0];
+    if (!employee || !employee.user_id) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานหรือ user_id ไม่มีค่า' });
+    }
+
+    // Upsert role to user_roles
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role)
+       VALUES ($1, $2)
+       ON CONFLICT (user_id, role)
+       DO UPDATE SET role = EXCLUDED.role`,
+      [employee.user_id, new_role]
+    );
+
+    res.json({ message: 'เปลี่ยนบทบาทสำเร็จ' });
+  } catch (error) {
+    console.error('Error changing role:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาด' });
+  }
+});
+
 // ===== Employees APIs =====
+
+// Get employee by user_id (for OAuth integration)
+app.get('/api/employees/user/:user_id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT e.*, d.name as department_name, p.name as position_name FROM employees e LEFT JOIN departments d ON e.department_id = d.id LEFT JOIN positions p ON e.position_id = p.id WHERE e.user_id = $1',
+      [req.params.user_id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'ไม่พบพนักงานสำหรับผู้ใช้นี้' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching employee by user:', error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาด' });
+  }
+});
 
 // Get all employees
 app.get('/api/employees', async (req, res) => {
@@ -85,17 +304,17 @@ app.post('/api/employees', async (req, res) => {
   try {
     const {
       employee_code, first_name, last_name, email, phone, department_id,
-      position_id, start_date, status, role
+      position_id, start_date, status
     } = req.body;
 
     const result = await pool.query(
       `INSERT INTO employees 
        (employee_code, first_name, last_name, email, phone, department_id, 
-        position_id, start_date, status, role) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+        position_id, start_date, status) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
        RETURNING *`,
       [employee_code, first_name, last_name, email, phone, department_id,
-       position_id, start_date, status || 'active', role || 'employee']
+       position_id, start_date, status || 'active']
     );
     res.json(result.rows[0]);
   } catch (error) {

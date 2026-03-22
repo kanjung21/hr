@@ -7,7 +7,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
 import { ThemeToggle } from '@/components/ThemeToggle';
 
 export default function Auth() {
@@ -16,7 +15,7 @@ export default function Auth() {
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmailSent, setResetEmailSent] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
-  const { signIn } = useAuth();
+  const { signIn, signInWithOAuth } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -37,22 +36,7 @@ export default function Auth() {
   const handleOffice365SignIn = async () => {
     setIsOffice365Loading(true);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'azure',
-        options: {
-          redirectTo: window.location.origin,
-          queryParams: {
-            prompt: 'login',
-          },
-        },
-      });
-      if (error) {
-        toast({
-          title: 'เกิดข้อผิดพลาด',
-          description: 'ไม่สามารถเข้าสู่ระบบด้วย Office365 ได้',
-          variant: 'destructive',
-        });
-      }
+      await signInWithOAuth();
     } catch (error: any) {
       toast({
         title: 'เกิดข้อผิดพลาด',
@@ -95,31 +79,15 @@ export default function Auth() {
     setIsLoading(true);
 
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
+      const response = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail }),
       });
 
-      if (error) throw error;
-
-      try {
-        const { data: hrAdminRoles } = await supabase
-          .from('user_roles')
-          .select('user_id')
-          .in('role', ['hr', 'admin']);
-
-        if (hrAdminRoles && hrAdminRoles.length > 0) {
-          const notifications = hrAdminRoles.map(role => ({
-            user_id: role.user_id,
-            title: 'มีการขอรีเซ็ตรหัสผ่าน',
-            message: `มีผู้ใช้ (${forgotEmail}) ขอรีเซ็ตรหัสผ่าน`,
-            type: 'password_reset',
-            is_read: false,
-          }));
-
-          await supabase.from('notifications').insert(notifications);
-        }
-      } catch (notifError) {
-        console.error('Failed to create notification:', notifError);
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data?.error || 'Cannot reset password');
       }
 
       setResetEmailSent(true);

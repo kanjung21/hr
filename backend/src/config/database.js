@@ -89,3 +89,21 @@ export function logDatabaseConfig() {
 export async function createDatabaseConnection() {
   try {
     // ถ้าใช้ node-postgres (pg)
+    const { Client } = await import('pg');
+    const config = getDatabaseConfig();
+
+    const client = new Client(config);
+    await client.connect();
+    console.log('✅ Database connection successful');
+
+    // ตัวอย่าง query
+    const result = await client.query('SELECT NOW()');
+    console.log('Current time:', result.rows[0]);
+
+    await client.end();
+    return true;
+  } catch (error) {
+    console.error('❌ Database connection failed:', error.message);
+    return false;
+  }
+}
